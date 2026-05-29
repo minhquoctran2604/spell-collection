@@ -177,6 +177,16 @@ class ReweightedSeq2SeqTrainer(Seq2SeqTrainer):
 
         return (loss, outputs) if return_outputs else loss
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        # During eval, Seq2SeqTrainer calls model.generate(**inputs). Our custom
+        # columns (token_weight, sample_weight) survive remove_unused_columns=False
+        # and would be forwarded to generate() -> ValueError "model_kwargs not used".
+        # They are training-only; strip them before the eval forward/generate.
+        inputs = {k: v for k, v in inputs.items() if k not in ("token_weight", "sample_weight")}
+        return super().prediction_step(
+            model, inputs, prediction_loss_only, ignore_keys=ignore_keys
+        )
+
 
 class WeightedCollator(DataCollatorForSeq2Seq):
     """DataCollatorForSeq2Seq that also pads `token_weight` and stacks
