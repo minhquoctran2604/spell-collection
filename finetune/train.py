@@ -212,6 +212,8 @@ def train(
     max_len: int = 256,
     eval_subsample: int = 4000,
     max_train: int = 0,
+    eval_steps: int = 2000,
+    logging_steps: int = 50,
     seed: int = 42,
 ) -> None:
     if not _IMPORT_OK:
@@ -322,9 +324,9 @@ def train(
         output_dir=output_dir,
         eval_strategy="steps",
         save_strategy="steps",
-        eval_steps=2000,
-        save_steps=2000,
-        logging_steps=50,
+        eval_steps=eval_steps,
+        save_steps=eval_steps,
+        logging_steps=logging_steps,
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
@@ -390,6 +392,8 @@ def main() -> int:
     p.add_argument("--max-len", type=int, default=256)
     p.add_argument("--eval-subsample", type=int, default=4000, help="Val subset size for in-loop F0.5 (0=full)")
     p.add_argument("--max-train", type=int, default=0, help="Cap train size for smoke test (0=full)")
+    p.add_argument("--eval-steps", type=int, default=2000, help="Eval+save every N steps (use ~20 for smoke)")
+    p.add_argument("--logging-steps", type=int, default=50, help="Log loss every N steps (use ~5 for smoke)")
     p.add_argument("--model", default="bmd1905/vietnamese-correction-v2")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
@@ -407,6 +411,8 @@ def main() -> int:
             max_len=args.max_len,
             eval_subsample=args.eval_subsample,
             max_train=args.max_train,
+            eval_steps=args.eval_steps,
+            logging_steps=args.logging_steps,
             seed=args.seed,
         )
         return 0
