@@ -277,6 +277,7 @@ def train(
     # Keep raw source text for F0.5 (needs input string, not just token ids).
     val_sources = list(ds["validation"]["input"])
     val_expected = list(ds["validation"]["expected"])
+    val_noise = list(ds["validation"]["noise_type"])
 
     def preprocess(examples):
         inputs = examples["input"]
@@ -312,7 +313,12 @@ def train(
     print("Tokenizing + computing edit/noise weights...", flush=True)
     tokenized = ds.map( preprocess, batched=True, remove_columns=ds["train"].column_names)
 
-    # compute_metrics: corpus-level F0.5 over the (subsampled) val set.
+    # compute_metrics: corpus-level F0.5 over the (subsampled) val set, PLUS a
+    # per-noise_type breakdown. The headline f05 can mask where gains land (e.g.
+    # total rises because missing_space got better while no_diacritic stays dead).
+    # Tracking per-type P/R/F0.5 every eval shows whether the model is fixing the
+    # weak categories (no_diacritic 0.022, tone_error 0.331) or just polishing the
+    # already-strong ones. Per-type metrics are logged as f05_<noise_type>.
     def compute_metrics(eval_preds):
         preds, labels = eval_preds
         if isinstance(preds, tuple):
@@ -321,14 +327,30 @@ def train(
         decoded = tokenizer.batch_decode(preds, skip_special_tokens=True)
         # Align with stored sources/expected by index (eval set order preserved).
         tp = fp = fn = 0
+        # per-noise_type accumulators: nt -> [tp, fp, fn]
+        from collections import defaultdict
+        by_nt: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
         n = min(len(decoded), len(val_sources), len(val_expected))
         for i in range(n):
             a, b, c = prf_counts(val_sources[i], val_expected[i], decoded[i])
             tp += a
             fp += b
             fn += c
+            nt = val_noise[i] if i < len(val_noise) else "unknown"
+            by_nt[nt][0] += a
+            by_nt[nt][1] += b
+            by_nt[nt][2] += c
         p, r, f = fbeta(tp, fp, fn)
-        return {"f05": f, "precision": p, "recall": r}
+        out = {"f05": f, "precision": p, "recall": r}
+        # Print a readable per-type table each eval, and surface per-type f05 in the
+        # logged metrics (so it lands in trainer_state.json log_history too).
+        print("\n  per-noise_type F0.5:", flush=True)
+        for nt in sorted(by_nt):
+            t, fpp, fnn = by_nt[nt]
+            pp, rr, ff = fbeta(t, fpp, fnn)
+            print(f"    {nt:<18} P={pp:.3f} R={rr:.3f} F0.5={ff:.3f}  (tp={t} fp={fpp} fn={fnn})", flush=True)
+            out[f"f05_{nt}"] = ff
+        return out
 
     args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
