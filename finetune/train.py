@@ -106,8 +106,13 @@ def fbeta(tp: int, fp: int, fn: int, beta: float = 0.5) -> tuple[float, float, f
 #   char_subst   0.469 -> 1.3
 #   char_swap    0.665 -> 1.0
 #   missing_space 0.750 -> 1.0  (already strong)
-#   identity     copy   -> 0.3  (down-weight pure-copy signal; protects precision
-#                                without letting copy dominate)
+#   identity     copy   -> 0.6  (raised from 0.3: at 0.3 the model over-corrected
+#                                clean sentences (fp=26 on 20 identity val samples,
+#                                F0.5=0). identity has NO edits to up-weight at the
+#                                token level, so the only lever to teach "leave a
+#                                correct sentence alone" is the per-sample weight.
+#                                Kept <=1.0 so it does not suppress recall on the
+#                                other (edit-bearing) noise types.)
 # ---------------------------------------------------------------------------
 NOISE_WEIGHTS = {
     "no_diacritic": 3.0,
@@ -115,7 +120,7 @@ NOISE_WEIGHTS = {
     "char_substitution": 1.3,
     "char_swap": 1.0,
     "missing_space": 1.0,
-    "identity": 0.3,
+    "identity": 0.6,
     "unknown": 1.0,
 }
 
