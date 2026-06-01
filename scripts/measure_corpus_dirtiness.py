@@ -65,6 +65,8 @@ def main() -> int:
     p.add_argument("--model", default="bmd1905/vietnamese-correction-v2")
     p.add_argument("--sample", type=int, default=2000)
     p.add_argument("--beams", type=int, default=5)
+    p.add_argument("--dump", default="dirty_suspects.jsonl",
+                   help="Write ALL suspected-dirty pairs here for manual review")
     args = p.parse_args()
 
     rows = []
@@ -89,6 +91,7 @@ def main() -> int:
     by_nt_dirty = Counter()
     total_edits = 0
     examples = []
+    dump_f = open(args.dump, "w", encoding="utf-8")
     bs = 16
     t0 = time.time()
     for i in range(0, len(rows), bs):
@@ -105,10 +108,19 @@ def main() -> int:
                 by_nt_dirty[nt] += 1
                 e = n_edits(r["expected"], out)
                 total_edits += e
+                # dump EVERY suspect for manual review (the judge model is noisy;
+                # the human decides real-dirty vs judge-false-alarm)
+                dump_f.write(json.dumps({
+                    "noise_type": nt,
+                    "expected": r["expected"],
+                    "judge_fixed": out,
+                    "n_edits": e,
+                }, ensure_ascii=False) + "\n")
                 if len(examples) < 15:
                     examples.append((r["expected"], out, e))
         if (i // bs) % 10 == 0:
             print(f"  {i+len(batch)}/{len(rows)} ({time.time()-t0:.0f}s)", flush=True)
+    dump_f.close()
 
     n = len(rows)
     dirty = sum(by_nt_dirty.values())
@@ -127,6 +139,7 @@ def main() -> int:
         print(f"    [{e}] {exp[:90]}")
         print(f"        -> {out[:90]}")
     print(f"\n  NOTE: lower bound (judge recall imperfect). READ examples — confirm real errors vs judge false-alarm.")
+    print(f"  ALL {dirty} suspects dumped -> {args.dump}  (review manually to separate real-dirty from judge over-correction)")
     return 0
 
 
