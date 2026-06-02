@@ -231,6 +231,8 @@ def train(
     logging_steps: int = 50,
     seed: int = 42,
     label_smoothing: float = 0.1,
+    edit_token_weight: float = 4.0,
+    identity_weight: float = 0.6,
 ) -> None:
     if not _IMPORT_OK:
         raise ImportError(
@@ -285,6 +287,14 @@ def train(
     val_expected = list(ds["validation"]["expected"])
     val_noise = list(ds["validation"]["noise_type"])
 
+    # Per-run loss knobs picked up by the `preprocess` closure below. Locals so the
+    # module-level constants stay as defaults/fallback while each run can override.
+    edit_w = edit_token_weight
+    copy_w = COPY_TOKEN_WEIGHT
+    noise_weights = dict(NOISE_WEIGHTS)
+    noise_weights["identity"] = identity_weight
+    print(f"edit_token_weight = {edit_w}  identity_weight = {identity_weight}", flush=True)
+
     def preprocess(examples):
         inputs = examples["input"]
         targets = examples["expected"]
@@ -304,14 +314,14 @@ def train(
         sample_weights = []
         for s_ids, t_ids, nt in zip(src_tok, label_ids, examples["noise_type"]):
             sm = SequenceMatcher(None, s_ids, t_ids, autojunk=False)
-            tw = [COPY_TOKEN_WEIGHT] * len(t_ids)
+            tw = [copy_w] * len(t_ids)
             for tag, i1, i2, j1, j2 in sm.get_opcodes():
                 if tag != "equal":
                     for j in range(j1, j2):  # target token positions that are edits
                         if 0 <= j < len(tw):
-                            tw[j] = EDIT_TOKEN_WEIGHT
+                            tw[j] = edit_w
             token_weights.append(tw)
-            sample_weights.append(NOISE_WEIGHTS.get(nt, 1.0))
+            sample_weights.append(noise_weights.get(nt, 1.0))
         model_inputs["token_weight"] = token_weights
         model_inputs["sample_weight"] = sample_weights
         return model_inputs
@@ -467,6 +477,10 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--label-smoothing", type=float, default=0.1,
                    help="CE label smoothing (lower -> less short-sequence/deletion bias; try 0.05 or 0.0)")
+    p.add_argument("--edit-token-weight", type=float, default=4.0,
+                   help="CE multiplier on edit (changed) target tokens; lower -> less over-editing (try 3.0)")
+    p.add_argument("--identity-weight", type=float, default=0.6,
+                   help="per-sample loss weight for identity (clean) examples; higher -> less over-correction (try 1.0)")
     args = p.parse_args()
 
     try:
@@ -486,6 +500,8 @@ def main() -> int:
             logging_steps=args.logging_steps,
             seed=args.seed,
             label_smoothing=args.label_smoothing,
+            edit_token_weight=args.edit_token_weight,
+            identity_weight=args.identity_weight,
         )
         return 0
     except Exception as e:
