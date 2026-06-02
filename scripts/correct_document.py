@@ -20,10 +20,34 @@ import argparse
 import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+
+
+def nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s or "")
+
+
+def _tokens(s: str) -> list[str]:
+    return nfc(s).strip().lower().split()
+
+
+def is_pure_deletion(src: str, out: str) -> bool:
+    """True if `out` is a strict subsequence of `src` (pure word deletion).
+
+    Every whitespace token of `out` (lowercased, NFC-normalized) must appear
+    in `src` in order, `out` must have fewer tokens, and it introduces no
+    new/changed token. Such an `out` corrupts meaning by dropping words.
+    """
+    e = _tokens(src)
+    f = _tokens(out)
+    if len(f) >= len(e):
+        return False
+    it = iter(e)
+    return all(tok in it for tok in f)
 
 
 def read_document(path: Path) -> list[str]:
@@ -63,6 +87,10 @@ def main() -> int:
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--max-len", type=int, default=256)
     p.add_argument("--num-beams", type=int, default=5)
+    p.add_argument("--length-penalty", type=float, default=1.0,
+                   help="beam length penalty (>1.0 favors longer outputs, discourages deletion)")
+    p.add_argument("--no-delete-guard", action="store_true",
+                   help="disable the anti-deletion guard (guard is ON by default)")
     args = p.parse_args()
 
     paras = read_document(Path(args.input_doc))
@@ -81,6 +109,8 @@ def main() -> int:
 
     out_f = open(args.output_txt, "w", encoding="utf-8")
     changed = 0
+    blocked = 0
+    guard_on = not args.no_delete_guard
     bs = args.batch_size
     t0 = time.time()
     for i in range(0, len(sents), bs):
@@ -88,9 +118,16 @@ def main() -> int:
         enc = tok(batch, return_tensors="pt", padding=True, truncation=True,
                   max_length=args.max_len).to(device)
         with torch.no_grad():
-            gen = model.generate(**enc, max_length=args.max_len, num_beams=args.num_beams)
+            gen = model.generate(**enc, max_length=args.max_len, num_beams=args.num_beams,
+                                 length_penalty=args.length_penalty)
         dec = tok.batch_decode(gen, skip_special_tokens=True)
         for src, out in zip(batch, dec):
+            if guard_on and src != out and is_pure_deletion(src, out):
+                # Pure word deletion corrupts meaning: reject, keep input unchanged.
+                blocked += 1
+                out_f.write(f"IN : {src}\n")
+                out_f.write(f"OUT: {src}  <-- DELETION BLOCKED (kept input)\n\n")
+                continue
             mark = "" if src == out else "  <-- CHANGED"
             if src != out:
                 changed += 1
@@ -101,6 +138,7 @@ def main() -> int:
     out_f.close()
     print(f"\nDone -> {args.output_txt}")
     print(f"  {changed}/{len(sents)} sentences changed ({changed/max(len(sents),1)*100:.1f}%)")
+    print(f"  {blocked} deletions blocked")
     return 0
 
 

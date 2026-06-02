@@ -230,6 +230,7 @@ def train(
     eval_steps: int = 2000,
     logging_steps: int = 50,
     seed: int = 42,
+    label_smoothing: float = 0.1,
 ) -> None:
     if not _IMPORT_OK:
         raise ImportError(
@@ -335,23 +336,49 @@ def train(
         # per-noise_type accumulators: nt -> [tp, fp, fn]
         from collections import defaultdict
         by_nt: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
+        # identity is special: input==expected, so there are NO gold edits -> TP is
+        # always 0 -> F0.5 is mathematically always 0 regardless of how well the model
+        # behaves. F0.5 is meaningless here. The right metric for identity is the
+        # "keep rate": fraction of clean sentences the model left UNCHANGED
+        # (actual == input). keep=1.0 is perfect (no over-correction); lower = the
+        # model corrupted clean text. Track count + correctly-kept separately.
+        id_total = 0
+        id_kept = 0
         n = min(len(decoded), len(val_sources), len(val_expected))
         for i in range(n):
+            nt = val_noise[i] if i < len(val_noise) else "unknown"
+            if nt == "identity":
+                id_total += 1
+                # kept = model output equals the (already-correct) input, NFC-normalized
+                if _nfc(decoded[i]) == _nfc(val_sources[i]):
+                    id_kept += 1
+                # still count its FP into the corpus totals (over-corrections hurt
+                # the overall precision, which is correct), but skip per-type F0.5.
+                _, b, _ = prf_counts(val_sources[i], val_expected[i], decoded[i])
+                fp += b
+                by_nt[nt][1] += b
+                continue
             a, b, c = prf_counts(val_sources[i], val_expected[i], decoded[i])
             tp += a
             fp += b
             fn += c
-            nt = val_noise[i] if i < len(val_noise) else "unknown"
             by_nt[nt][0] += a
             by_nt[nt][1] += b
             by_nt[nt][2] += c
         p, r, f = fbeta(tp, fp, fn)
         out = {"f05": f, "precision": p, "recall": r}
+        id_keep_rate = id_kept / id_total if id_total else 0.0
+        out["identity_keep_rate"] = id_keep_rate
         # Print a readable per-type table each eval, and surface per-type f05 in the
         # logged metrics (so it lands in trainer_state.json log_history too).
         print("\n  per-noise_type F0.5:", flush=True)
         for nt in sorted(by_nt):
             t, fpp, fnn = by_nt[nt]
+            if nt == "identity":
+                # report keep_rate instead of the always-zero F0.5
+                print(f"    {nt:<18} keep_rate={id_keep_rate:.3f}  "
+                      f"({id_kept}/{id_total} kept clean, fp={fpp} over-corrections)", flush=True)
+                continue
             pp, rr, ff = fbeta(t, fpp, fnn)
             print(f"    {nt:<18} P={pp:.3f} R={rr:.3f} F0.5={ff:.3f}  (tp={t} fp={fpp} fn={fnn})", flush=True)
             out[f"f05_{nt}"] = ff
@@ -387,7 +414,10 @@ def train(
         # -> reweighting silently dies. Keep them.
         remove_unused_columns=False,
         dataloader_num_workers=2,
-        save_total_limit=2,
+        # Keep only 1 checkpoint on disk. Each checkpoint is ~600MB (bf16 weights) +
+        # ~1.2GB optimizer state; with limit=2 plus the final save the run exceeded
+        # Kaggle's ~20GB /kaggle/working quota and the final save was truncated.
+        save_total_limit=1,
         load_best_model_at_end=True,
         metric_for_best_model="f05",
         greater_is_better=True,
@@ -407,6 +437,8 @@ def train(
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )
+    trainer.label_smoothing = label_smoothing
+    print(f"label_smoothing = {label_smoothing}", flush=True)
 
     print("Starting training (full FT, reweighted loss, F0.5 selection)...", flush=True)
     trainer.train()
@@ -433,6 +465,8 @@ def main() -> int:
     p.add_argument("--logging-steps", type=int, default=50, help="Log loss every N steps (use ~5 for smoke)")
     p.add_argument("--model", default="bmd1905/vietnamese-correction-v2")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--label-smoothing", type=float, default=0.1,
+                   help="CE label smoothing (lower -> less short-sequence/deletion bias; try 0.05 or 0.0)")
     args = p.parse_args()
 
     try:
@@ -451,6 +485,7 @@ def main() -> int:
             eval_steps=args.eval_steps,
             logging_steps=args.logging_steps,
             seed=args.seed,
+            label_smoothing=args.label_smoothing,
         )
         return 0
     except Exception as e:
