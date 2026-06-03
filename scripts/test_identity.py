@@ -35,6 +35,18 @@ def n_edits(a: str, b: str) -> int:
     return sum(1 for tag, *_ in sm.get_opcodes() if tag != "equal")
 
 
+import re as _re
+# All punctuation / quotes / brackets we treat as NOISE (differences here are NOT
+# real over-corrections — dropping a period, a quote, a trailing ! is harmless).
+_PUNCT = _re.compile(r"""[\s.,;:!?()\[\]{}"'`“”‘’«»…\-–—/\\|*•·]+""")
+
+
+def norm_punct(s: str) -> str:
+    """Lowercase + strip ALL punctuation/quotes/whitespace, so two strings that
+    differ ONLY in punctuation compare equal. Real letter/word changes survive."""
+    return _PUNCT.sub("", nfc(s).lower())
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("usage: python scripts/test_identity.py <model_dir> <test.jsonl> [--max N] [--beams K]", file=sys.stderr)
@@ -71,9 +83,11 @@ def main() -> int:
     print(f"model loaded on {device}", flush=True)
 
     kept = 0          # output == input (verbatim, perfect)
+    kept_soft = 0     # output == input IGNORING punctuation differences
     changed = 0       # output != input (over-corrected)
+    punct_only = 0    # differs from input ONLY by punctuation (harmless)
     total_fp = 0      # total spurious edits across all samples
-    examples = []     # a few over-correction examples to eyeball
+    examples = []     # a few REAL (non-punct) over-correction examples to eyeball
     bs = 16
     t0 = time.time()
     for i in range(0, len(rows), bs):
@@ -84,13 +98,20 @@ def main() -> int:
             gen = model.generate(**enc, max_length=256, num_beams=beams, early_stopping=True)
         dec = tok.batch_decode(gen, skip_special_tokens=True)
         for r, out in zip(batch, dec):
-            if nfc(out) == nfc(r["input"]):
+            verbatim = nfc(out) == nfc(r["input"])
+            soft_equal = norm_punct(out) == norm_punct(r["input"])
+            if verbatim:
                 kept += 1
+                kept_soft += 1
+            elif soft_equal:
+                # differs ONLY by punctuation -> harmless, count as soft-kept
+                kept_soft += 1
+                punct_only += 1
             else:
                 changed += 1
                 e = n_edits(r["input"], out)
                 total_fp += e
-                if len(examples) < 10:
+                if len(examples) < 15:
                     examples.append((r["input"], out, e))
         if (i // bs) % 5 == 0:
             print(f"  {i+len(batch)}/{len(rows)}  ({(time.time()-t0):.0f}s)", flush=True)
@@ -99,12 +120,14 @@ def main() -> int:
     print("\n" + "=" * 60)
     print(f"IDENTITY OVER-CORRECTION REPORT  (model={Path(model_dir).name})")
     print("=" * 60)
-    print(f"  total identity      : {n}")
-    print(f"  kept verbatim (good): {kept}  ({kept/n*100:.1f}%)")
-    print(f"  over-corrected (bad): {changed}  ({changed/n*100:.1f}%)")
-    print(f"  total spurious edits: {total_fp}  (avg {total_fp/max(n,1):.2f}/sample)")
-    print(f"  KEEP RATE           : {kept/n:.3f}")
-    print("\n  sample over-corrections (input -> output, #edits):")
+    print(f"  total identity        : {n}")
+    print(f"  kept verbatim (strict): {kept}  ({kept/n*100:.1f}%)")
+    print(f"  punct-only diff (ok)  : {punct_only}  ({punct_only/n*100:.1f}%)")
+    print(f"  REAL over-correct     : {changed}  ({changed/n*100:.1f}%)  <- letters/words changed")
+    print(f"  total spurious edits  : {total_fp}  (avg {total_fp/max(n,1):.2f}/sample)")
+    print(f"  KEEP RATE (strict)    : {kept/n:.3f}   (counts punct diffs as bad)")
+    print(f"  KEEP RATE (soft)      : {kept_soft/n:.3f}   (ignores punct diffs)  <-- FAIR metric")
+    print("\n  sample REAL over-corrections (input -> output, #edits):")
     for inp, out, e in examples:
         print(f"    [{e}] {inp}")
         print(f"        -> {out}")
