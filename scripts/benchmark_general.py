@@ -20,19 +20,41 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import unicodedata
+from difflib import SequenceMatcher
 
 
 def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s or "")
 
 
-# reuse the metric primitives from benchmark_common (same F0.5 as YHCT headline)
-from benchmark_common import prf_counts, fbeta  # noqa: E402
+# --- self-contained F0.5 edit metric (identical algorithm to benchmark_common /
+# train.py, inlined so this script has no cross-file import dependency) ---
+def get_edits(src: str, tgt: str) -> set:
+    src, tgt = nfc(src), nfc(tgt)
+    sm = SequenceMatcher(None, src, tgt, autojunk=False)
+    return {(i1, i2, tgt[j1:j2]) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != "equal"}
+
+
+def prf_counts(inp: str, exp: str, act: str):
+    inp_n, exp_n, act_n = nfc(inp), nfc(exp), nfc(act)
+    gold = get_edits(inp_n, exp_n)
+    if act_n == exp_n:
+        return len(gold), 0, 0
+    pred = get_edits(inp_n, act_n)
+    return len(gold & pred), len(pred - gold), len(gold - pred)
+
+
+def fbeta(tp: int, fp: int, fn: int, beta: float = 0.5):
+    p = tp / (tp + fp) if (tp + fp) else 0.0
+    r = tp / (tp + fn) if (tp + fn) else 0.0
+    b2 = beta * beta
+    denom = b2 * p + r
+    f = (1 + b2) * p * r / denom if denom else 0.0
+    return p, r, f
 
 
 def main() -> int:
