@@ -67,6 +67,7 @@ def main() -> int:
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--max-len", type=int, default=256)
     p.add_argument("--num-beams", type=int, default=5)
+    p.add_argument("--prefix", default="", help="prefix prepended to each input (viT5 trained with 'sửa lỗi chính tả: ')")
     args = p.parse_args()
 
     rows = [json.loads(l) for l in open(args.test_jsonl, encoding="utf-8") if l.strip()]
@@ -77,7 +78,13 @@ def main() -> int:
     import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tok = AutoTokenizer.from_pretrained(args.model)
+    try:
+        tok = AutoTokenizer.from_pretrained(args.model)
+    except Exception:
+        # viT5 / T5 SentencePiece tokenizers trip AutoTokenizer's
+        # convert_to_native_format (KeyError: 0) on some transformers versions.
+        from transformers import T5Tokenizer
+        tok = T5Tokenizer.from_pretrained(args.model)
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model).to(device)
     model.eval()
     print(f"loaded on {device}", flush=True)
@@ -89,7 +96,7 @@ def main() -> int:
     t0 = time.time()
     for i in range(0, len(rows), bs):
         batch = rows[i:i + bs]
-        inp = [r["input"] for r in batch]
+        inp = [args.prefix + r["input"] for r in batch]
         enc = tok(inp, return_tensors="pt", padding=True, truncation=True,
                   max_length=args.max_len).to(device)
         with torch.no_grad():
