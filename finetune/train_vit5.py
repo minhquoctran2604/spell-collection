@@ -27,9 +27,10 @@ import numpy as np
 
 from datasets import load_dataset
 from transformers import (
-    AutoTokenizer, AutoModelForSeq2SeqLM,
+    AutoModelForSeq2SeqLM,
     Seq2SeqTrainer, Seq2SeqTrainingArguments,
     DataCollatorForSeq2Seq, EarlyStoppingCallback,
+    T5Tokenizer,
 )
 
 # --- shared F0.5 helpers (self-contained copies; ko import từ train.py để giữ độc lập) ---
@@ -90,7 +91,10 @@ def train(train_jsonl, val_jsonl, output_dir, *,
         print(f"Val stratified-subsampled to {len(ds['validation'])} per-type={dict(got)}", flush=True)
 
     print(f"Loading tokenizer & model: {model_name}", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+    # T5Tokenizer (slow, sentencepiece) directly — bypass AutoTokenizer's
+    # convert_to_native_format path that errors with KeyError: 0 on some
+    # transformers versions when loading viT5.
+    tokenizer = T5Tokenizer.from_pretrained(model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
     # T5 conventionally uses a task prefix. Spell-correction prompt:
