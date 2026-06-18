@@ -411,7 +411,9 @@ def train(
         lr_scheduler_type="cosine",
         # Label smoothing handled inside ReweightedSeq2SeqTrainer.compute_loss
         # (the Trainer's built-in label_smoother is bypassed by the custom loss).
-        bf16=True,
+        # bf16 only on Ampere+ (A100/L4/A40/3090); P100/T4/V100 → use fp16.
+        bf16=__import__("torch").cuda.is_bf16_supported() if __import__("torch").cuda.is_available() else False,
+        fp16=__import__("torch").cuda.is_available() and not __import__("torch").cuda.is_bf16_supported(),
         predict_with_generate=True,
         generation_max_length=max_len,
         generation_num_beams=1,
